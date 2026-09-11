@@ -488,14 +488,17 @@ function downloadQrPng() {
 }
 /* ---------- WebNFC：进页面即探测能力，不支持则禁用按钮并说明条件 ---------- */
 const nfcStatus = document.getElementById('nfc-status');
+const nfcBtn = document.getElementById('btn-nfc');
 let nfcReader = null;
 let nfcAbort = null;
+let nfcBusy = false;
+let nfcWriting = false;
 if (!('NDEFReader' in window) || !window.isSecureContext) {
   document.getElementById('nfc-support').textContent =
     '当前浏览器或环境不支持 WebNFC（需要 Chrome / Edge 移动端，并通过 HTTPS 访问）。';
 } else {
   document.getElementById('nfc-support').textContent = '当前环境支持 WebNFC，生成链接后即可写入。';
-  document.getElementById('btn-nfc').disabled = false;
+  nfcBtn.disabled = false;
 }
 /**
  * 写入流程：scan() 必须在点击手势内同步调用（浏览器要求用户激活），
@@ -505,27 +508,43 @@ if (!('NDEFReader' in window) || !window.isSecureContext) {
  */
 async function startNfcWrite() {
   if (!currentUrl) { mdui.snackbar({ message: '请先生成链接' }); return; }
+  if (nfcBusy) return;
+  nfcBusy = true;
+  nfcWriting = false;
+  nfcBtn.disabled = true;
   try {
     nfcReader = new NDEFReader();
     nfcAbort = new AbortController();
     const scanning = nfcReader.scan({ signal: nfcAbort.signal });
     nfcReader.addEventListener('reading', () => {
+      if (nfcWriting) return;
+      nfcWriting = true;
       nfcStatus.textContent = '检测到标签，正在写入…';
       nfcReader.write({ records: [{ recordType: 'url', data: currentUrl }] })
         .then(() => {
           nfcStatus.textContent = '写入成功，标签已包含失物页链接。';
           mdui.snackbar({ message: 'NFC 写入成功' });
           if (nfcAbort) nfcAbort.abort();
+          nfcWriting = false;
+          nfcBusy = false;
+          nfcBtn.disabled = false;
         })
-        .catch((err) => { nfcStatus.textContent = '写入失败：' + err.message; });
+        .catch((err) => {
+          nfcStatus.textContent = '写入失败：' + err.message + '（可再次贴近标签重试）';
+          nfcWriting = false;
+        });
     });
     nfcReader.addEventListener('readingerror', () => {
+      if (nfcWriting) return;
       nfcStatus.textContent = '标签识别失败，请移开后重试。';
     });
     nfcStatus.textContent = '请将手机背面 NFC 区域贴近标签…';
     await scanning;
   } catch (err) {
     nfcStatus.textContent = '无法启动 NFC：' + err.message;
+    nfcBusy = false;
+    nfcWriting = false;
+    nfcBtn.disabled = false;
   }
 }`;
 
@@ -569,7 +588,7 @@ export default {
 
     // 页面均为只读，写方法一律 405
     if (request.method !== 'GET' && request.method !== 'HEAD') {
-      return html(errorPage('仅支持 GET 请求。', 405), 405);
+      return html(errorPage('仅支持 GET 与 HEAD 请求。', 405), 405);
     }
     // /gen 与别名 /generate（含尾斜杠）渲染链接生成页
     if (['/gen', '/gen/', '/generate', '/generate/'].includes(url.pathname)) {
