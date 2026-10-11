@@ -248,10 +248,12 @@ ${extraScript}
 }
 
 /**
- * 渲染失物展示页：图片卡片（可选）+ 属性卡片 + 底部操作栏（联系/复制/地图导航）。
+ * 渲染失物展示页：图片卡片（可选）+ 属性卡片 + 底部操作栏（联系/复制/地图导航），
+ * 顶栏额外提供「回读编辑」入口（携带当前查询串跳 /gen 预填）。
  * @param {object} item parseItem 产出的失物对象
+ * @param {string} [editHref] 回读编辑入口（/gen + 当前查询串），空则不渲染编辑按钮
  */
-function renderPage(item) {
+function renderPage(item, editHref = '') {
   const imageCard = item.image
     ? `<mdui-card class="img-card" variant="elevated"><img src="${escapeHtml(item.image)}" alt="${escapeHtml(item.name)}"></mdui-card>`
     : '';
@@ -299,7 +301,15 @@ ${list}
 </div></mdui-card>
 </div>`;
 
-  return layout(`${item.name} · 失物信息`, content, { bottomBar: actions.join('') });
+  // 顶栏右侧：回读编辑入口（携带当前查询串）+ 新建/分享
+  const editTop = editHref
+    ? `<a class="plain" href="${escapeHtml(editHref)}"><mdui-button-icon icon="edit"></mdui-button-icon></a>`
+    : '';
+
+  return layout(`${item.name} · 失物信息`, content, {
+    bottomBar: actions.join(''),
+    topTrailing: editTop + GEN_TOP + SHARE_TOP,
+  });
 }
 
 /** 生成页表单字段映射：DOM id → URL 参数名（与服务端 LIMITS 保持一致） */
@@ -314,17 +324,27 @@ const GEN_FIELDS = [
 /**
  * 渲染链接生成页：上方表单，下方结果卡片（链接 / 二维码 / NFC 写入三个选项卡）。
  * 客户端校验规则与服务端 parseItem 保持一致（必填、长度、图片协议）。
+ * @param {object|null} [initial] 回读已有物品时用于预填表单的对象（parseItem 产出），无则空表单
  */
-function renderGenPage() {
+function renderGenPage(initial = null) {
+  // 回读编辑时按字段注入 value 属性（escapeHtml 防注入），空值不输出 value
+  const prefill = (key) =>
+    initial && initial[key] ? ` value="${escapeHtml(initial[key])}"` : '';
+  const editing = !!initial;
+
   const content = `<div class="page">
 <mdui-card variant="elevated"><div class="card-body">
-<p class="hint">填写失物信息，点击「生成链接」，将生成的链接发给他人即可展示失物页面。</p>
+<p class="hint">${
+    editing
+      ? '已回读已有物品信息，修改后点击「生成链接」得到新链接。'
+      : '填写失物信息，点击「生成链接」，将生成的链接发给他人即可展示失物页面。'
+  }</p>
 <div class="form">
-<mdui-text-field id="f-name" class="field" variant="outlined" label="物品名称 *" icon="label" required maxlength="${LIMITS.name}" counter clearable></mdui-text-field>
-<mdui-text-field id="f-image" class="field" variant="outlined" type="url" label="照片链接" icon="image" placeholder="https://..." helper="仅支持 http/https 图片地址，可留空" maxlength="${LIMITS.image}" clearable></mdui-text-field>
-<mdui-text-field id="f-desc" class="field" variant="outlined" label="物品描述" icon="description" rows="3" autosize maxlength="${LIMITS.desc}" counter></mdui-text-field>
-<mdui-text-field id="f-contact" class="field" variant="outlined" label="联系方式" icon="contacts" helper="手机号或邮箱，失物页会生成联系按钮，可留空" maxlength="${LIMITS.contact}" clearable></mdui-text-field>
-<mdui-text-field id="f-location" class="field" variant="outlined" label="地点" icon="place" helper="填写后失物页会显示「地图导航」按钮，可留空" maxlength="${LIMITS.location}" clearable></mdui-text-field>
+<mdui-text-field id="f-name" class="field" variant="outlined" label="物品名称 *" icon="label" required maxlength="${LIMITS.name}" counter clearable${prefill('name')}></mdui-text-field>
+<mdui-text-field id="f-image" class="field" variant="outlined" type="url" label="照片链接" icon="image" placeholder="https://..." helper="仅支持 http/https 图片地址，可留空" maxlength="${LIMITS.image}" clearable${prefill('image')}></mdui-text-field>
+<mdui-text-field id="f-desc" class="field" variant="outlined" label="物品描述" icon="description" rows="3" autosize maxlength="${LIMITS.desc}" counter${prefill('desc')}></mdui-text-field>
+<mdui-text-field id="f-contact" class="field" variant="outlined" label="联系方式" icon="contacts" helper="手机号或邮箱，失物页会生成联系按钮，可留空" maxlength="${LIMITS.contact}" clearable${prefill('contact')}></mdui-text-field>
+<mdui-text-field id="f-location" class="field" variant="outlined" label="地点" icon="place" helper="填写后失物页会显示「地图导航」按钮，可留空" maxlength="${LIMITS.location}" clearable${prefill('location')}></mdui-text-field>
 <mdui-button variant="filled" icon="link" onclick="generate()">生成链接</mdui-button>
 </div>
 </div></mdui-card>
@@ -548,8 +568,8 @@ async function startNfcWrite() {
   }
 }`;
 
-  return layout('生成失物链接', content, {
-    barTitle: '生成失物链接',
+  return layout(editing ? '编辑失物信息' : '生成失物链接', content, {
+    barTitle: editing ? '编辑失物信息' : '生成失物链接',
     topLeading: BACK_TOP,
     topTrailing: '',
     headExtra: `<script src="${QR_JS}"></script>`,
@@ -590,20 +610,22 @@ export default {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return html(errorPage('仅支持 GET 与 HEAD 请求。', 405), 405);
     }
-    // /gen 与别名 /generate（含尾斜杠）渲染链接生成页
+    // /gen 与别名 /generate（含尾斜杠）渲染链接生成页；
+    // 带有效参数时视为「回读编辑」，用同一套 parseItem 解码后预填表单（错则回退为空表单）
     if (['/gen', '/gen/', '/generate', '/generate/'].includes(url.pathname)) {
-      return html(renderGenPage(), 200);
+      const initial = parseItem(url.searchParams).item || null;
+      return html(renderGenPage(initial), 200);
     }
     // / 与 /item 渲染失物页，其余路径 404
     if (!['/', '/item', '/item/'].includes(url.pathname)) {
       return html(errorPage('未找到该路由。可用路由：/item（失物页，携带参数）、/gen（链接生成页）。', 404), 404);
     }
 
-    // 参数校验失败返回 400 错误页，成功渲染失物页
+    // 参数校验失败返回 400 错误页，成功渲染失物页（附带回读编辑入口）
     const result = parseItem(url.searchParams);
     if (result.errors) {
       return html(errorPage(result.errors.join('；'), 400), 400);
     }
-    return html(renderPage(result.item), 200);
+    return html(renderPage(result.item, '/gen' + url.search), 200);
   },
 };
